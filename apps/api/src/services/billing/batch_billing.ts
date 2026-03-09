@@ -22,6 +22,8 @@ interface BillingOperation {
   is_extract: boolean;
   timestamp: string;
   api_key_id: number | null;
+  /** True if credits were pre-reserved in Autumn at request time via reserveCredits(). */
+  autumnReserved: boolean;
 }
 
 // Grouped billing operations for batch processing
@@ -53,7 +55,14 @@ async function releaseLock() {
   logger.info("🔓 Released billing batch processing lock");
 }
 
-// Main function to process the billing batch
+/**
+ * Dequeues pending billing operations from Redis, groups them by team, and
+ * commits each group to Supabase via the `bill_team_6` RPC.
+ *
+ * For groups where credits were pre-reserved in Autumn (`autumnReserved: true`),
+ * a refund is issued on failure; nothing is done on success. For unreserved
+ * groups (legacy / BullMQ path), Autumn is updated post-commit.
+ */
 export async function processBillingBatch() {
   const redis = getRedisConnection();
 
@@ -135,11 +144,30 @@ export async function processBillingBatch() {
           group.is_extract,
         );
 
+        // Compute per-group credit split so mixed batches (some reserved in
+        // Autumn at request time, some not) are handled correctly.
+        const reservedCredits = group.operations
+          .filter(op => op.autumnReserved)
+          .reduce((sum, op) => sum + op.credits, 0);
+        const unreservedCredits = group.total_credits - reservedCredits;
+
         if (!billingResult.success) {
           logger.warn(
             `⚠️ Billing returned success: false for team ${group.team_id}, skipping Autumn tracking`,
             { billingResult, team_id: group.team_id, credits: group.total_credits },
           );
+          // Refund only the credits that were actually reserved in Autumn.
+          if (reservedCredits > 0) {
+            void autumnService.refundCredits({
+              teamId: group.team_id,
+              value: reservedCredits,
+              properties: {
+                source: "processBillingBatch_failure",
+                apiKeyId: group.api_key_id,
+                subscriptionId: group.subscription_id,
+              },
+            });
+          }
           continue;
         }
 
@@ -147,17 +175,19 @@ export async function processBillingBatch() {
           `✅ Successfully billed team ${group.team_id} for ${group.total_credits} credits`,
         );
 
-        // Track usage in Autumn only after the billing RPC has confirmed success,
-        // so Autumn never overstates usage for operations that ultimately failed.
-        void autumnService.trackCredits({
-          teamId: group.team_id,
-          value: group.total_credits,
-          properties: {
-            source: "processBillingBatch",
-            apiKeyId: group.api_key_id,
-            subscriptionId: group.subscription_id,
-          },
-        });
+        // Track only unreserved credits post-commit; reserved credits were
+        // already recorded in Autumn at request time.
+        if (unreservedCredits > 0) {
+          void autumnService.reserveCredits({
+            teamId: group.team_id,
+            value: unreservedCredits,
+            properties: {
+              source: "processBillingBatch",
+              apiKeyId: group.api_key_id,
+              subscriptionId: group.subscription_id,
+            },
+          });
+        }
       } catch (error) {
         logger.error(`❌ Failed to bill team ${group.team_id}`, {
           error,
@@ -203,13 +233,20 @@ export function startBillingBatchProcessing() {
   batchInterval.unref();
 }
 
-// Add a billing operation to the queue
+/**
+ * Enqueues a billing operation for async batch processing.
+ *
+ * Pass `autumnReserved: true` if credits were already reserved in Autumn via
+ * `autumnService.reserveCredits()` — the batch processor will refund on
+ * `bill_team_6` failure and skip re-tracking on success.
+ */
 export async function queueBillingOperation(
   team_id: string,
   subscription_id: string | null | undefined,
   credits: number,
   api_key_id: number | null,
   is_extract: boolean = false,
+  autumnReserved: boolean = false,
 ) {
   // Skip queuing for preview teams
   if (team_id === "preview" || team_id.startsWith("preview_")) {
@@ -232,6 +269,7 @@ export async function queueBillingOperation(
       is_extract,
       timestamp: new Date().toISOString(),
       api_key_id,
+      autumnReserved,
     };
 
     // Add operation to Redis list

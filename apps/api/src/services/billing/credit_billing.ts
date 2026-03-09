@@ -8,6 +8,7 @@ import { AuthCreditUsageChunk } from "../../controllers/v1/types";
 import { autoCharge } from "./auto_charge";
 import { getValue, setValue } from "../redis";
 import { queueBillingOperation } from "./batch_billing";
+import { autumnService } from "../autumn/autumn.service";
 import type { Logger } from "winston";
 
 /**
@@ -29,13 +30,20 @@ export async function billTeam(
       api_key_id: number | null,
       logger: Logger | undefined,
     ) => {
-      // Within the authenticated context, queue the billing operation
+      // Reserve in Autumn at request time; await so autumnReserved is accurate.
+      // billTeam is fire-and-forget at call sites, so this doesn't block responses.
+      const autumnReserved = await autumnService.reserveCredits({
+        teamId: team_id,
+        value: credits,
+        properties: { source: "billTeam" },
+      });
       return queueBillingOperation(
         team_id,
         subscription_id,
         credits,
         api_key_id,
         false,
+        autumnReserved,
       );
     },
     { success: true, message: "No DB, bypassed." },

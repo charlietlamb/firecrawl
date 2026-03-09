@@ -245,22 +245,13 @@ class AutumnService {
   }
 
   /**
-   * Temporary migration shim.
+   * Temporary migration shim — remove once all teams have Autumn history.
    *
-   * Backfills missing Autumn usage from Firecrawl by tracking only the delta
-   * between Firecrawl's combined (scrape + extract) current-period usage and
-   * Autumn's recorded usage.
-   *
-   * `currentValue` is the number of credits about to be tracked for the
-   * current event.  It is subtracted from the Firecrawl total before computing
-   * the delta so that the event is not counted twice (once in the backfill and
-   * once by the explicit track() call that follows).
-   *
-   * Calls are serialised per team so that two concurrent invocations never
-   * both read a stale autumnUsage of 0 and each replay the full historical
-   * delta (double-counting prior usage in Autumn).
-   *
-   * Remove this once the Autumn migration is complete.
+   * Tracks the delta between Firecrawl's combined (scrape + extract) usage
+   * and Autumn's recorded usage. `currentValue` is subtracted before the
+   * comparison to avoid double-counting the event being reserved. Calls are
+   * serialised per team to prevent concurrent invocations from each replaying
+   * the full historical delta.
    */
   private backfillUsageIfNeeded(
     teamId: string,
@@ -296,7 +287,7 @@ class AutumnService {
       (extractChunk?.adjusted_credits_used ?? 0);
 
     // Exclude the current event's credits from the backfill: they will be
-    // tracked separately by the track() call in trackCredits().
+    // tracked separately by the track() call in reserveCredits().
     const firecrawlHistorical = firecrawlTotal - currentValue;
     if (firecrawlHistorical <= 0) return;
 
@@ -325,15 +316,16 @@ class AutumnService {
   }
 
   /**
-   * Tracks billed credits against the team's Autumn entity.
+   * Records a credit usage event in Autumn at request time.
+   * Returns true on success, false if Autumn is unavailable or an error occurs.
    */
-  async trackCredits({
+  async reserveCredits({
     teamId,
     value,
     properties,
-  }: TrackCreditsParams): Promise<void> {
-    if (!autumnClient) return;
-    if (this.isPreviewTeam(teamId)) return;
+  }: TrackCreditsParams): Promise<boolean> {
+    if (!autumnClient) return false;
+    if (this.isPreviewTeam(teamId)) return false;
 
     try {
       const customerId = await this.ensureTrackingContext(teamId);
@@ -345,12 +337,39 @@ class AutumnService {
         value,
         properties,
       });
+      return true;
     } catch (error) {
-      logger.warn("Autumn trackCredits failed", {
+      logger.warn("Autumn reserveCredits failed", {
         teamId,
         value,
         error,
       });
+      return false;
+    }
+  }
+
+  /**
+   * Reverses a prior reserveCredits call by tracking a negative usage event.
+   */
+  async refundCredits({
+    teamId,
+    value,
+    properties,
+  }: TrackCreditsParams): Promise<void> {
+    if (!autumnClient) return;
+    if (this.isPreviewTeam(teamId)) return;
+
+    try {
+      const customerId = await this.ensureTrackingContext(teamId);
+      await this.track({
+        customerId,
+        entityId: teamId,
+        featureId: CREDITS_FEATURE_ID,
+        value: -value,
+        properties: { ...properties, source: "autumn_refund" },
+      });
+    } catch (error) {
+      logger.warn("Autumn refundCredits failed", { teamId, value, error });
     }
   }
 
