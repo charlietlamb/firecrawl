@@ -4,6 +4,7 @@ import { supabase_service } from "../../../services/supabase";
 import crypto from "crypto";
 import { z } from "zod";
 import { apiKeyToFcApiKey } from "../../../lib/parseApi";
+import { autumnService } from "../../../services/autumn/autumn.service";
 
 async function addCoupon(teamId: string, integration: any) {
   if (!integration.coupon_credits) {
@@ -215,6 +216,8 @@ export async function integCreateUserController(req: Request, res: Response) {
           });
         }
 
+        await autumnService.ensureTeamProvisioned({ teamId });
+
         alreadyExisted = true;
 
         logger.info("Found existing team from existing user", {
@@ -268,6 +271,8 @@ export async function integCreateUserController(req: Request, res: Response) {
           logger.error("Failed to link team to organization", { error: orgLinkError });
           return res.status(500).json({ error: "Failed to link team to organization" });
         }
+
+        await autumnService.ensureTeamProvisioned({ teamId, orgId: newOrg.id });
 
         const { error: newUserTeamError } = await supabase_service
           .from("user_teams")
@@ -350,6 +355,8 @@ export async function integCreateUserController(req: Request, res: Response) {
       }
 
       apiKey = apiKeyFc.key;
+
+      await autumnService.ensureTeamProvisioned({ teamId });
 
       await addCoupon(teamId, integration);
 

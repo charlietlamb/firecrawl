@@ -42,6 +42,7 @@ import { getACUCTeam } from "../../controllers/auth";
 import { supabase_service } from "../supabase";
 import { processEngpickerJob } from "../../lib/engpicker";
 import { logRequest } from "../logging/log_job";
+import { autumnService } from "../autumn/autumn.service";
 
 const workerLockDuration = config.WORKER_LOCK_DURATION;
 const workerStalledCheckInterval = config.WORKER_STALLED_CHECK_INTERVAL;
@@ -685,6 +686,7 @@ const INDEX_INSERT_INTERVAL = 3000;
 const WEBHOOK_INSERT_INTERVAL = 15000;
 const OMCE_INSERT_INTERVAL = 5000;
 const BROWSER_ACTIVITY_INSERT_INTERVAL = 10000;
+const AUTUMN_PROVISIONING_BACKFILL_INTERVAL = 5 * 60 * 1000;
 // Search indexing is now handled by separate search service, not this worker
 // const SEARCH_INDEX_INTERVAL = 10000;
 
@@ -754,6 +756,18 @@ const BROWSER_ACTIVITY_INSERT_INTERVAL = 10000;
     5 * 60 * 1000,
   );
 
+  const runAutumnProvisioningBackfill = async () => {
+    if (isShuttingDown) {
+      return;
+    }
+    await autumnService.backfillRecentProvisioning();
+  };
+  void runAutumnProvisioningBackfill();
+  const autumnProvisioningBackfillInterval = setInterval(
+    runAutumnProvisioningBackfill,
+    AUTUMN_PROVISIONING_BACKFILL_INTERVAL,
+  );
+
   const engpickerPromise = (async () => {
     if (config.DISABLE_ENGPICKER) {
       logger.info("Engpicker is disabled, skipping");
@@ -803,6 +817,7 @@ const BROWSER_ACTIVITY_INSERT_INTERVAL = 10000;
   clearInterval(browserActivityInterval);
   clearInterval(omceInserterInterval);
   clearInterval(billingTallyInterval);
+  clearInterval(autumnProvisioningBackfillInterval);
 
   logger.info("All workers shut down, exiting process");
 })();

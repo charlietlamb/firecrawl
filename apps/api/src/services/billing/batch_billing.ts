@@ -5,6 +5,7 @@ import { supabase_service } from "../supabase";
 import * as Sentry from "@sentry/node";
 import { withAuth } from "../../lib/withAuth";
 import { setCachedACUC, setCachedACUCTeam } from "../../controllers/auth";
+import { autumnService } from "../autumn/autumn.service";
 
 // Configuration constants
 const BATCH_KEY = "billing_batch";
@@ -137,6 +138,19 @@ export async function processBillingBatch() {
         logger.info(
           `✅ Successfully billed team ${group.team_id} for ${group.total_credits} ${group.is_extract ? "tokens" : "credits"}`,
         );
+
+        // Track usage in Autumn only after the billing RPC has succeeded, so
+        // Autumn never overstates usage for operations that ultimately failed.
+        void autumnService.trackCredits({
+          teamId: group.team_id,
+          value: group.total_credits,
+          properties: {
+            source: "processBillingBatch",
+            isExtract: group.is_extract,
+            apiKeyId: group.api_key_id,
+            subscriptionId: group.subscription_id,
+          },
+        });
       } catch (error) {
         logger.error(`❌ Failed to bill team ${group.team_id}`, {
           error,
