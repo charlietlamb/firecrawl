@@ -64,7 +64,7 @@ jest.mock("../../supabase", () => ({
 }));
 
 // Import AFTER mocks are wired up.
-import { AutumnService } from "../autumn.service";
+import { AutumnService, BoundedMap, BoundedSet } from "../autumn.service";
 import { RateLimiterMode } from "../../../types";
 
 // ---------------------------------------------------------------------------
@@ -104,29 +104,44 @@ beforeEach(() => {
 // BoundedMap / BoundedSet (via observable side-effects on the caches)
 // ---------------------------------------------------------------------------
 
-describe("BoundedMap / BoundedSet eviction", () => {
-  it("does not grow customerOrgCache beyond its cap", async () => {
-    // We can't directly inspect private fields, but we can verify the service
-    // remains functional after many unique teams (no OOM / infinite growth).
-    // This is a smoke test — the real eviction is covered by the class internals.
-    const svc = makeService();
-    mockEntityGet.mockResolvedValue(makeEntity(0));
-    mockEntityCreate.mockResolvedValue({ id: "x" });
+describe("BoundedMap eviction", () => {
+  it("never exceeds its cap", () => {
+    const m = new BoundedMap<number, number>(3);
+    m.set(1, 1); m.set(2, 2); m.set(3, 3);
+    expect(m.size).toBe(3);
+    m.set(4, 4); // evicts key 1
+    expect(m.size).toBe(3);
+    expect(m.has(1)).toBe(false);
+    expect(m.has(4)).toBe(true);
+  });
 
-    // Drive 10 unique teams through provisioning.
-    await Promise.all(
-      Array.from({ length: 10 }, (_, i) =>
-        svc.ensureTeamProvisioned({
-          teamId: `team-${i}`,
-          orgId: `org-${i}`,
-        }),
-      ),
-    );
+  it("does not evict on update of existing key", () => {
+    const m = new BoundedMap<number, number>(2);
+    m.set(1, 1); m.set(2, 2);
+    m.set(1, 99); // update, not a new entry
+    expect(m.size).toBe(2);
+    expect(m.get(1)).toBe(99);
+    expect(m.has(2)).toBe(true);
+  });
+});
 
-    // Still resolves correctly for a new team after many entries.
-    await expect(
-      svc.ensureTeamProvisioned({ teamId: "team-new", orgId: "org-new" }),
-    ).resolves.toBeUndefined();
+describe("BoundedSet eviction", () => {
+  it("never exceeds its cap", () => {
+    const s = new BoundedSet<number>(3);
+    s.add(1); s.add(2); s.add(3);
+    expect(s.size).toBe(3);
+    s.add(4); // evicts value 1
+    expect(s.size).toBe(3);
+    expect(s.has(1)).toBe(false);
+    expect(s.has(4)).toBe(true);
+  });
+
+  it("does not evict on re-add of existing value", () => {
+    const s = new BoundedSet<number>(2);
+    s.add(1); s.add(2);
+    s.add(1); // already present, no eviction
+    expect(s.size).toBe(2);
+    expect(s.has(2)).toBe(true);
   });
 });
 
@@ -387,24 +402,27 @@ describe("_backfillUsageIfNeeded (via reserveCredits)", () => {
 
   it("serialises concurrent backfills per team", async () => {
     const svc = makeService();
-    const calls: number[] = [];
+    let concurrentRuns = 0;
+    let maxConcurrentRuns = 0;
 
     mockGetACUCTeam.mockImplementation(async () => {
-      calls.push(Date.now());
-      await new Promise(r => setTimeout(r, 10));
+      concurrentRuns++;
+      maxConcurrentRuns = Math.max(maxConcurrentRuns, concurrentRuns);
+      await new Promise(r => setTimeout(r, 20));
+      concurrentRuns--;
       return makeAcucChunk(100);
     });
     mockEntityGet.mockResolvedValue(makeEntity(0));
 
-    // Fire two reserve calls concurrently — backfills should be serialised.
     await Promise.all([
       svc.reserveCredits({ teamId: "team-1", value: 1 }),
       svc.reserveCredits({ teamId: "team-1", value: 1 }),
     ]);
 
-    // Each backfill run fetches two ACUC modes → 2 calls per run, 2 runs max.
-    // Serialised means the second run won't start until the first finishes.
-    // We just verify it didn't error out.
-    expect(mockTrack).toHaveBeenCalled();
+    // Each backfill run calls getACUCTeam for 2 modes concurrently (scrape +
+    // extract). With serialisation, at most one run executes at a time, so the
+    // peak concurrent call count is 2 (1 run × 2 modes). Without serialisation
+    // all 4 calls (2 runs × 2 modes) could overlap, giving a peak of 4.
+    expect(maxConcurrentRuns).toBeLessThanOrEqual(2);
   });
 });

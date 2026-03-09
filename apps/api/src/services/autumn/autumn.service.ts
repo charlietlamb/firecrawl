@@ -24,7 +24,7 @@ const AUTUMN_PROVISIONING_LOOKBACK_MS = 15 * 60 * 1000;
  * inserted entry is removed before inserting the new one, keeping memory usage
  * at most O(max) regardless of how many unique keys are seen over time.
  */
-class BoundedMap<K, V> extends Map<K, V> {
+export class BoundedMap<K, V> extends Map<K, V> {
   constructor(private readonly max: number) {
     super();
   }
@@ -40,7 +40,7 @@ class BoundedMap<K, V> extends Map<K, V> {
 /**
  * Size-bounded Set with FIFO eviction. Mirrors BoundedMap for set semantics.
  */
-class BoundedSet<V> extends Set<V> {
+export class BoundedSet<V> extends Set<V> {
   constructor(private readonly max: number) {
     super();
   }
@@ -294,6 +294,9 @@ export class AutumnService {
     }
 
     const orgId = await this.lookupOrgIdForTeam(teamId);
+    // Rewarm the cache immediately so that a concurrent or subsequent call that
+    // finds ensuredTeams warm but customerOrgCache evicted avoids another DB hit.
+    this.customerOrgCache.set(teamId, orgId);
     await this.ensureTeamProvisioned({ teamId, orgId });
     return orgId;
   }
