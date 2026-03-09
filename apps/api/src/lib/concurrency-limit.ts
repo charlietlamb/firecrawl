@@ -6,6 +6,21 @@ import { logger } from "./logger";
 import { abTestJob } from "../services/ab-test";
 import { scrapeQueue, type NuQJob } from "../services/worker/nuq";
 
+export class QueueFullError extends Error {
+  statusCode = 429;
+  constructor(queueSize: number, queueLimit: number) {
+    super(
+      `Queue limit reached: your team has ${queueSize} jobs queued (limit: ${queueLimit}). Please wait for existing jobs to complete before adding more, or upgrade your plan for a higher limit. For more info, see https://docs.firecrawl.dev/rate-limits#concurrent-browser-limits`,
+    );
+    this.name = "QueueFullError";
+  }
+}
+
+// min 50k, max 2M, 2000 per concurrent browser
+export function getTeamQueueLimit(concurrencyLimit: number): number {
+  return Math.min(Math.max(concurrencyLimit * 2000, 50_000), 2_000_000);
+}
+
 const constructKey = (team_id: string) => "concurrency-limiter:" + team_id;
 const constructQueueKey = (team_id: string) =>
   "concurrency-limit-queue:" + team_id;
@@ -105,13 +120,16 @@ export async function pushConcurrencyLimitedJobs(
   const zaddArgs: (string | number)[] = [];
 
   for (const { job, timeout } of jobs) {
-    const jobKey = constructJobKey(job.id);
-    if (timeout === Infinity) {
-      pipeline.set(jobKey, JSON.stringify(job), "EX", 172800); // 48h
-    } else {
-      pipeline.set(jobKey, JSON.stringify(job), "PX", timeout);
-    }
-    zaddArgs.push(now + timeout, job.id);
+    const cappedTimeout = Number.isFinite(timeout)
+      ? Math.min(timeout, 172800000)
+      : 172800000; // cap at 48h, fallback for NaN/Infinity
+    pipeline.set(
+      constructJobKey(job.id),
+      JSON.stringify(job),
+      "PX",
+      cappedTimeout,
+    );
+    zaddArgs.push(now + cappedTimeout, job.id);
   }
 
   pipeline.zadd(queueKey, ...zaddArgs);
@@ -170,7 +188,7 @@ export async function pushCrawlConcurrencyLimitActiveJob(
   );
 }
 
-async function removeCrawlConcurrencyLimitActiveJob(
+export async function removeCrawlConcurrencyLimitActiveJob(
   crawl_id: string,
   id: string,
 ) {
@@ -185,7 +203,7 @@ async function removeCrawlConcurrencyLimitActiveJob(
  * @param teamId
  * @returns A job that can be run, or null if there are no more jobs to run.
  */
-async function getNextConcurrentJob(teamId: string): Promise<{
+export async function getNextConcurrentJob(teamId: string): Promise<{
   job: ConcurrencyLimitedJob;
   timeout: number;
 } | null> {
@@ -280,6 +298,11 @@ async function getNextConcurrentJob(teamId: string): Promise<{
 export async function concurrentJobDone(job: NuQJob<any>) {
   if (job.id && job.data && job.data.team_id) {
     await removeConcurrencyLimitActiveJob(job.data.team_id, job.id);
+    await getRedisConnection().zrem(
+      constructQueueKey(job.data.team_id),
+      job.id,
+    );
+    await getRedisConnection().del(constructJobKey(job.id));
     await cleanOldConcurrencyLimitEntries(job.data.team_id);
     await cleanOldConcurrencyLimitedJobs(job.data.team_id);
 
@@ -288,89 +311,92 @@ export async function concurrentJobDone(job: NuQJob<any>) {
       await cleanOldCrawlConcurrencyLimitEntries(job.data.crawl_id);
     }
 
-    let i = 0;
-    for (; i < 10; i++) {
-      const maxTeamConcurrency =
-        (
-          await getACUCTeam(
-            job.data.team_id,
-            false,
-            true,
-            job.data.is_extract
-              ? RateLimiterMode.Extract
-              : RateLimiterMode.Crawl,
-          )
-        )?.concurrency ?? 2;
+    const maxTeamConcurrency =
+      (
+        await getACUCTeam(
+          job.data.team_id,
+          false,
+          true,
+          job.data.is_extract ? RateLimiterMode.Extract : RateLimiterMode.Crawl,
+        )
+      )?.concurrency ?? 2;
+
+    let staleSkipped = 0;
+    while (staleSkipped < 100) {
       const currentActiveConcurrency = (
         await getConcurrencyLimitActiveJobs(job.data.team_id)
       ).length;
 
-      if (currentActiveConcurrency < maxTeamConcurrency) {
-        const nextJob = await getNextConcurrentJob(job.data.team_id);
-        if (nextJob !== null) {
-          await pushConcurrencyLimitActiveJob(
-            job.data.team_id,
-            nextJob.job.id,
-            60 * 1000,
+      if (currentActiveConcurrency >= maxTeamConcurrency) break;
+
+      const nextJob = await getNextConcurrentJob(job.data.team_id);
+      if (nextJob === null) break;
+
+      await pushConcurrencyLimitActiveJob(
+        job.data.team_id,
+        nextJob.job.id,
+        60 * 1000,
+      );
+
+      if (nextJob.job.data.crawl_id) {
+        await pushCrawlConcurrencyLimitActiveJob(
+          nextJob.job.data.crawl_id,
+          nextJob.job.id,
+          60 * 1000,
+        );
+
+        const sc = await getCrawl(nextJob.job.data.crawl_id);
+        if (sc !== null && typeof sc.crawlerOptions?.delay === "number") {
+          await new Promise(resolve =>
+            setTimeout(resolve, sc.crawlerOptions.delay * 1000),
           );
-
-          if (nextJob.job.data.crawl_id) {
-            await pushCrawlConcurrencyLimitActiveJob(
-              nextJob.job.data.crawl_id,
-              nextJob.job.id,
-              60 * 1000,
-            );
-
-            const sc = await getCrawl(nextJob.job.data.crawl_id);
-            if (sc !== null && typeof sc.crawlerOptions?.delay === "number") {
-              await new Promise(resolve =>
-                setTimeout(resolve, sc.crawlerOptions.delay * 1000),
-              );
-            }
-          }
-
-          abTestJob(nextJob.job.data);
-
-          const promotedSuccessfully =
-            (await scrapeQueue.promoteJobFromBacklogOrAdd(
-              nextJob.job.id,
-              nextJob.job.data,
-              {
-                priority: nextJob.job.priority,
-                listenable: nextJob.job.listenable,
-                ownerId: nextJob.job.data.team_id ?? undefined,
-                groupId: nextJob.job.data.crawl_id ?? undefined,
-              },
-            )) !== null;
-
-          if (promotedSuccessfully) {
-            logger.debug("Successfully promoted concurrent queued job", {
-              teamId: job.data.team_id,
-              jobId: nextJob.job.id,
-              zeroDataRetention: nextJob.job.data?.zeroDataRetention,
-            });
-            break;
-          } else {
-            logger.warn(
-              "Was unable to promote concurrent queued job as it already exists in the database",
-              {
-                teamId: job.data.team_id,
-                jobId: nextJob.job.id,
-                zeroDataRetention: nextJob.job.data?.zeroDataRetention,
-              },
-            );
-          }
-        } else {
-          break;
         }
-      } else {
+      }
+
+      abTestJob(nextJob.job.data);
+
+      const promotedSuccessfully =
+        (await scrapeQueue.promoteJobFromBacklogOrAdd(
+          nextJob.job.id,
+          nextJob.job.data,
+          {
+            priority: nextJob.job.priority,
+            listenable: nextJob.job.listenable,
+            ownerId: nextJob.job.data.team_id ?? undefined,
+            groupId: nextJob.job.data.crawl_id ?? undefined,
+          },
+        )) !== null;
+
+      if (promotedSuccessfully) {
+        logger.debug("Successfully promoted concurrent queued job", {
+          teamId: job.data.team_id,
+          jobId: nextJob.job.id,
+          zeroDataRetention: nextJob.job.data?.zeroDataRetention,
+        });
         break;
+      } else {
+        logger.warn(
+          "Was unable to promote concurrent queued job as it already exists in the database",
+          {
+            teamId: job.data.team_id,
+            jobId: nextJob.job.id,
+            zeroDataRetention: nextJob.job.data?.zeroDataRetention,
+          },
+        );
+        await removeConcurrencyLimitActiveJob(job.data.team_id, nextJob.job.id);
+        if (nextJob.job.data.crawl_id) {
+          await removeCrawlConcurrencyLimitActiveJob(
+            nextJob.job.data.crawl_id,
+            nextJob.job.id,
+          );
+        }
+        staleSkipped++;
       }
     }
 
-    if (i === 10) {
+    if (staleSkipped >= 100) {
       logger.warn(
-        "Failed to promote a concurrent job after 10 iterations, bailing!",
+        "Skipped 100 stale entries in concurrency queue without a successful promotion",
         {
           teamId: job.data.team_id,
         },

@@ -158,6 +158,7 @@ export interface ScrapeOptions {
   minAge?: number;
   storeInCache?: boolean;
   integration?: string;
+  origin?: string;
 }
 
 export interface WebhookConfig {
@@ -453,6 +454,7 @@ export interface SearchRequest {
   timeout?: number; // ms
   scrapeOptions?: ScrapeOptions;
   integration?: string;
+  origin?: string;
 }
 
 export interface CrawlOptions {
@@ -474,6 +476,7 @@ export interface CrawlOptions {
   regexOnFullURL?: boolean;
   zeroDataRetention?: boolean;
   integration?: string;
+  origin?: string;
 }
 
 export interface CrawlResponse {
@@ -501,6 +504,7 @@ export interface BatchScrapeOptions {
   zeroDataRetention?: boolean;
   idempotencyKey?: string;
   integration?: string;
+  origin?: string;
 }
 
 export interface BatchScrapeResponse {
@@ -532,6 +536,7 @@ export interface MapOptions {
   limit?: number;
   timeout?: number;
   integration?: string;
+  origin?: string;
   location?: LocationConfig;
 }
 
@@ -692,6 +697,7 @@ export interface BrowserCreateResponse {
   id?: string;
   cdpUrl?: string;
   liveViewUrl?: string;
+  interactiveLiveViewUrl?: string;
   expiresAt?: string;
   error?: string;
 }
@@ -718,6 +724,7 @@ export interface BrowserSession {
   status: string;
   cdpUrl: string;
   liveViewUrl: string;
+  interactiveLiveViewUrl?: string;
   streamWebView: boolean;
   createdAt: string;
   lastActivity: string;

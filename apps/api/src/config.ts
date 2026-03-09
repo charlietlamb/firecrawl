@@ -71,8 +71,6 @@ const configSchema = z.object({
   SUPABASE_ANON_TOKEN: z.string().optional(),
   SUPABASE_SERVICE_TOKEN: z.string().optional(),
   SUPABASE_REPLICA_URL: z.string().optional(),
-  SUPABASE_ACUC_URL: z.string().optional(),
-  SUPABASE_ACUC_SERVICE_TOKEN: z.string().optional(),
   INDEX_SUPABASE_URL: z.string().optional(),
   INDEX_SUPABASE_SERVICE_TOKEN: z.string().optional(),
   SEARCH_INDEX_SUPABASE_URL: z.string().optional(),
@@ -122,6 +120,7 @@ const configSchema = z.object({
   NUQ_WORKER_START_PORT: z.coerce.number().default(3006),
   NUQ_WORKER_COUNT: z.coerce.number().default(5),
   NUQ_PREFETCH_WORKER_PORT: z.coerce.number().default(3011).catch(3011), // todo: investigate why .catch is needed
+  NUQ_RECONCILER_WORKER_PORT: z.coerce.number().default(3012).catch(3012),
   EXTRACT_WORKER_PORT: z.coerce.number().default(3004),
   NUQ_WAIT_MODE: z.string().optional(),
 
@@ -158,6 +157,7 @@ const configSchema = z.object({
 
   // PDF Rust Extraction (pdf-inspector)
   PDF_RUST_EXTRACT_ENABLE: z.stringbool().optional(),
+  PDF_SHADOW_COMPARISON_ENABLE: z.stringbool().optional(),
 
   // Webhooks
   SELF_HOSTED_WEBHOOK_URL: z.string().optional(),
