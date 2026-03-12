@@ -34,7 +34,7 @@ describe("scrapeSearchResults", () => {
         scrapeOptions: {} as any,
         apiKeyId: 123,
         requestId: "req-1",
-        billing: { endpoint: "search", requestSource: "agent" },
+        billing: { endpoint: "agent" },
       },
       { debug: jest.fn(), info: jest.fn(), error: jest.fn() } as any,
       null as any,
@@ -47,7 +47,7 @@ describe("scrapeSearchResults", () => {
     expect(processJobInternal).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          billing: { endpoint: "search", requestSource: "agent" },
+          billing: { endpoint: "agent" },
         }),
       }),
     );

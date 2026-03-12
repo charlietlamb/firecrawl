@@ -10,11 +10,8 @@ export type BillingEndpoint =
   | "scrape"
   | "search";
 
-export type BillingRequestSource = "agent";
-
 export type BillingMetadata = {
   endpoint: BillingEndpoint;
-  requestSource?: BillingRequestSource;
 };
 
 export function resolveBillingMetadata({
@@ -39,8 +36,8 @@ export function resolveBillingMetadata({
   };
 }
 
-export function toAutumnBillingProperties(billing: BillingMetadata): Record<string, string> {
-  return billing.requestSource
-    ? { endpoint: billing.endpoint, requestSource: billing.requestSource }
-    : { endpoint: billing.endpoint };
+export function toAutumnBillingProperties(
+  billing: BillingMetadata,
+): Record<string, string> {
+  return { endpoint: billing.endpoint };
 }

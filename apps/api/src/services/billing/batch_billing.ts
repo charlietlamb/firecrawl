@@ -103,10 +103,11 @@ export async function processBillingBatch() {
 
     for (const op of operations) {
       const billing = resolveBillingMetadata({
-        billing: op.billing ?? (op.endpoint ? { endpoint: op.endpoint } : undefined),
+        billing:
+          op.billing ?? (op.endpoint ? { endpoint: op.endpoint } : undefined),
         isExtract: op.is_extract,
       });
-      const key = `${op.team_id}:${op.subscription_id ?? "null"}:${billing.endpoint}:${billing.requestSource ?? ""}:${op.is_extract}:${op.api_key_id}`;
+      const key = `${op.team_id}:${op.subscription_id ?? "null"}:${billing.endpoint}:${op.is_extract}:${op.api_key_id}`;
 
       if (!groupedOperations.has(key)) {
         groupedOperations.set(key, {
@@ -169,7 +170,11 @@ export async function processBillingBatch() {
         if (!billingResult.success) {
           logger.warn(
             `⚠️ Billing returned success: false for team ${group.team_id}, skipping Autumn tracking`,
-            { billingResult, team_id: group.team_id, credits: group.total_credits },
+            {
+              billingResult,
+              team_id: group.team_id,
+              credits: group.total_credits,
+            },
           );
           // Refund only the credits that were actually reserved in Autumn.
           if (reservedCredits > 0) {
@@ -414,9 +419,11 @@ async function supaBillTeam(
 
   // Fire-and-forget — a Redis failure here must not trigger a false Autumn refund
   // after bill_team_6 has already committed.
-  getRedisConnection().sadd("billed_teams", team_id).catch(err => {
-    _logger.warn("Failed to add team to billed_teams set", { err, team_id });
-  });
+  getRedisConnection()
+    .sadd("billed_teams", team_id)
+    .catch(err => {
+      _logger.warn("Failed to add team to billed_teams set", { err, team_id });
+    });
 
   // Update cached ACUC to reflect the new credit usage
   (async () => {
