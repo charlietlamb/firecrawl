@@ -1,15 +1,12 @@
-import {
-  extractLinks,
-  extractMetadata,
-  transformHtml,
-  TransformHtmlOptions,
-} from "@mendable/firecrawl-rs";
+import { extractLinks, extractMetadata, transformHtml } from "@mendable/firecrawl-rs";
+
+type TransformHtmlOptions = Parameters<typeof transformHtml>[0];
 
 describe("HTML Transformer", () => {
   describe("extractLinks", () => {
     it("should return empty array for null or undefined input", async () => {
-      expect(await extractLinks(null)).toEqual([]);
-      expect(await extractLinks(undefined)).toEqual([]);
+      expect(await extractLinks(null as any)).toEqual([]);
+      expect(await extractLinks(undefined as any)).toEqual([]);
     });
 
     it("should extract links from HTML content", async () => {

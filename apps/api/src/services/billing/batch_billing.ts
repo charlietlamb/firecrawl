@@ -6,6 +6,12 @@ import * as Sentry from "@sentry/node";
 import { withAuth } from "../../lib/withAuth";
 import { setCachedACUC, setCachedACUCTeam } from "../../controllers/auth";
 import { autumnService } from "../autumn/autumn.service";
+import {
+  resolveBillingMetadata,
+  toAutumnBillingProperties,
+  type BillingEndpoint,
+  type BillingMetadata,
+} from "./types";
 
 // Configuration constants
 const BATCH_KEY = "billing_batch";
@@ -19,6 +25,8 @@ interface BillingOperation {
   team_id: string;
   subscription_id: string | null;
   credits: number;
+  billing?: BillingMetadata;
+  endpoint?: BillingEndpoint;
   is_extract: boolean;
   timestamp: string;
   api_key_id: number | null;
@@ -31,6 +39,7 @@ interface GroupedBillingOperation {
   team_id: string;
   subscription_id: string | null;
   total_credits: number;
+  billing: BillingMetadata;
   is_extract: boolean;
   api_key_id: number | null;
   operations: BillingOperation[];
@@ -93,13 +102,18 @@ export async function processBillingBatch() {
     const groupedOperations = new Map<string, GroupedBillingOperation>();
 
     for (const op of operations) {
-      const key = `${op.team_id}:${op.subscription_id ?? "null"}:${op.is_extract}:${op.api_key_id}`;
+      const billing = resolveBillingMetadata({
+        billing: op.billing ?? (op.endpoint ? { endpoint: op.endpoint } : undefined),
+        isExtract: op.is_extract,
+      });
+      const key = `${op.team_id}:${op.subscription_id ?? "null"}:${billing.endpoint}:${billing.requestSource ?? ""}:${op.is_extract}:${op.api_key_id}`;
 
       if (!groupedOperations.has(key)) {
         groupedOperations.set(key, {
           team_id: op.team_id,
           subscription_id: op.subscription_id,
           total_credits: 0,
+          billing,
           is_extract: op.is_extract,
           api_key_id: op.api_key_id,
           operations: [],
@@ -119,6 +133,7 @@ export async function processBillingBatch() {
           team_id: group.team_id,
           subscription_id: group.subscription_id,
           total_credits: group.total_credits,
+          billing: group.billing,
           operation_count: group.operations.length,
           is_extract: group.is_extract,
         },
@@ -163,6 +178,7 @@ export async function processBillingBatch() {
               value: reservedCredits,
               properties: {
                 source: "processBillingBatch_failure",
+                ...toAutumnBillingProperties(group.billing),
                 apiKeyId: group.api_key_id,
                 subscriptionId: group.subscription_id,
               },
@@ -183,6 +199,7 @@ export async function processBillingBatch() {
             value: unreservedCredits,
             properties: {
               source: "processBillingBatch",
+              ...toAutumnBillingProperties(group.billing),
               apiKeyId: group.api_key_id,
               subscriptionId: group.subscription_id,
             },
@@ -207,6 +224,7 @@ export async function processBillingBatch() {
             value: reservedCredits,
             properties: {
               source: "processBillingBatch_exception",
+              ...toAutumnBillingProperties(group.billing),
               apiKeyId: group.api_key_id,
               subscriptionId: group.subscription_id,
             },
@@ -257,6 +275,7 @@ export async function queueBillingOperation(
   subscription_id: string | null | undefined,
   credits: number,
   api_key_id: number | null,
+  billing: BillingMetadata,
   is_extract: boolean = false,
   autumnReserved: boolean = false,
 ) {
@@ -270,6 +289,7 @@ export async function queueBillingOperation(
     team_id,
     subscription_id,
     credits,
+    billing,
     is_extract,
   });
 
@@ -278,6 +298,7 @@ export async function queueBillingOperation(
       team_id,
       subscription_id: subscription_id ?? null,
       credits,
+      billing,
       is_extract,
       timestamp: new Date().toISOString(),
       api_key_id,
