@@ -233,4 +233,18 @@ describe("processBillingBatch", () => {
       }),
     });
   });
+
+  it("survives unexpected synchronous finalizeAutumnLocks failures", async () => {
+    queue = [makeOp({ autumnLockId: "lock-1" })];
+    finalizeCreditsLock.mockImplementationOnce(() => {
+      throw new Error("sync finalize failure");
+    });
+
+    await processBillingBatch();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Autumn finalizeAutumnLocks failed unexpectedly",
+      expect.objectContaining({ team_id: "team-1", action: "confirm" }),
+    );
+  });
 });

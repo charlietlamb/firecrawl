@@ -80,28 +80,37 @@ async function finalizeAutumnLocks(
 
   if (lockedOperations.length === 0) return;
 
-  const results = await Promise.allSettled(
-    lockedOperations.map(op =>
-      autumnService.finalizeCreditsLock({
-        lockId: op.autumnLockId,
-        action,
-        properties: {
-          ...op.autumnProperties,
-          subscriptionId: op.subscription_id,
-          finalizeSource: source,
-        },
-      }),
-    ),
-  );
+  try {
+    const results = await Promise.allSettled(
+      lockedOperations.map(op =>
+        autumnService.finalizeCreditsLock({
+          lockId: op.autumnLockId,
+          action,
+          properties: {
+            ...op.autumnProperties,
+            subscriptionId: op.subscription_id,
+            finalizeSource: source,
+          },
+        }),
+      ),
+    );
 
-  const rejectedCount = results.filter(
-    result => result.status === "rejected",
-  ).length;
-  if (rejectedCount > 0) {
-    logger.warn("Autumn finalizeCreditsLock rejected unexpectedly", {
+    const rejectedCount = results.filter(
+      result => result.status === "rejected",
+    ).length;
+    if (rejectedCount > 0) {
+      logger.warn("Autumn finalizeCreditsLock rejected unexpectedly", {
+        team_id: group.team_id,
+        action,
+        rejectedCount,
+      });
+    }
+  } catch (error) {
+    logger.warn("Autumn finalizeAutumnLocks failed unexpectedly", {
       team_id: group.team_id,
       action,
-      rejectedCount,
+      operation_count: lockedOperations.length,
+      error,
     });
   }
 }
