@@ -44,13 +44,63 @@ jest.mock("../../../controllers/auth", () => ({
 }));
 
 let queue: string[] = [];
+const billedTeams = new Set<string>();
+const locks = new Map<string, string>();
 const redis = {
-  set: jest.fn(async () => "OK"),
-  del: jest.fn(async () => 1),
-  lpop: jest.fn(async () => queue.shift() ?? null),
-  llen: jest.fn(async () => queue.length),
-  rpush: jest.fn(async () => 1),
-  sadd: jest.fn(async () => 1),
+  set: jest.fn(
+    async (
+      key: string,
+      value: string,
+      mode: string,
+      timeout: number,
+      nx: string,
+    ) => {
+      if (
+        key !== "billing_batch_lock" ||
+        value !== "1" ||
+        mode !== "PX" ||
+        timeout !== 30000 ||
+        nx !== "NX"
+      ) {
+        throw new Error("unexpected redis.set args");
+      }
+      if (locks.has(key)) return null;
+      locks.set(key, value);
+      return "OK";
+    },
+  ),
+  del: jest.fn(async (key: string) => {
+    if (key !== "billing_batch_lock") {
+      throw new Error("unexpected redis.del key");
+    }
+    return locks.delete(key) ? 1 : 0;
+  }),
+  lpop: jest.fn(async (key: string) => {
+    if (key !== "billing_batch") {
+      throw new Error("unexpected redis.lpop key");
+    }
+    return queue.shift() ?? null;
+  }),
+  llen: jest.fn(async (key: string) => {
+    if (key !== "billing_batch") {
+      throw new Error("unexpected redis.llen key");
+    }
+    return queue.length;
+  }),
+  rpush: jest.fn(async (key: string, value: string) => {
+    if (key !== "billing_batch") {
+      throw new Error("unexpected redis.rpush key");
+    }
+    queue.push(value);
+    return queue.length;
+  }),
+  sadd: jest.fn(async (key: string, teamId: string) => {
+    if (key !== "billed_teams") {
+      throw new Error("unexpected redis.sadd key");
+    }
+    billedTeams.add(teamId);
+    return 1;
+  }),
 };
 jest.mock("../../queue-service", () => ({
   getRedisConnection: () => redis,
@@ -90,6 +140,8 @@ function deferred<T>() {
 beforeEach(() => {
   jest.clearAllMocks();
   queue = [];
+  billedTeams.clear();
+  locks.clear();
   reserveCredits.mockResolvedValue(true);
   finalizeCreditsLock.mockResolvedValue(undefined);
   rpc.mockResolvedValue({ data: [], error: null });
@@ -165,5 +217,20 @@ describe("processBillingBatch", () => {
       }),
     });
     expect(captureException).toHaveBeenCalled();
+  });
+
+  it("treats undefined autumnLockId as unlocked for legacy queued ops", async () => {
+    queue = [makeOp({ autumnLockId: undefined })];
+
+    await processBillingBatch();
+
+    expect(finalizeCreditsLock).not.toHaveBeenCalled();
+    expect(reserveCredits).toHaveBeenCalledWith({
+      teamId: "team-1",
+      value: 10,
+      properties: expect.objectContaining({
+        source: "processBillingBatch",
+      }),
+    });
   });
 });

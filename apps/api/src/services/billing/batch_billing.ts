@@ -75,7 +75,7 @@ async function finalizeAutumnLocks(
       op,
     ): op is BillingOperation & {
       autumnLockId: string;
-    } => op.autumnLockId !== null,
+    } => typeof op.autumnLockId === "string",
   );
 
   if (lockedOperations.length === 0) return;
@@ -189,7 +189,7 @@ export async function processBillingBatch() {
       }
 
       const unreservedCredits = group.operations
-        .filter(op => op.autumnLockId === null)
+        .filter(op => op.autumnLockId == null)
         .reduce((sum, op) => sum + op.credits, 0);
 
       try {
