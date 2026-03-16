@@ -24,6 +24,11 @@ import { validate as isUuid } from "uuid";
 
 import { config } from "../config";
 import { supabase_service } from "../services/supabase";
+import {
+  autumnService,
+  isAutumnCheckEnabled,
+} from "../services/autumn/autumn.service";
+
 export function checkCreditsMiddleware(
   _minimum?: number,
 ): (req: RequestWithAuth, res: Response, next: NextFunction) => void {
@@ -114,12 +119,50 @@ export function checkCreditsMiddleware(
         }
       }
 
-      const { success, remainingCredits, chunk } = await checkTeamCredits(
+      const requestedCredits = minimum ?? 1;
+      const useAutumnCheck =
+        isAutumnCheckEnabled() && !req.acuc?.is_extract;
+      let { success, remainingCredits, chunk } = await checkTeamCredits(
         req.acuc ?? null,
         req.auth.team_id,
-        minimum ?? 1,
+        requestedCredits,
+        { sideEffects: !useAutumnCheck },
       );
-      //todo(autumn) add .check call here
+
+      const autumnProperties = {
+        source: "checkCreditsMiddleware",
+        path: req.path,
+      };
+      if (useAutumnCheck) {
+        const autumnAllowed = await autumnService.checkCredits({
+          teamId: req.auth.team_id,
+          value: requestedCredits,
+          properties: autumnProperties,
+        });
+
+        if (autumnAllowed === null) {
+          ({ success, remainingCredits, chunk } = await checkTeamCredits(
+            req.acuc ?? null,
+            req.auth.team_id,
+            requestedCredits,
+          ));
+        } else {
+          if (autumnAllowed !== success) {
+            logger.warn("Autumn check result diverged from legacy credit gate", {
+              teamId: req.auth.team_id,
+              path: req.path,
+              requestedCredits,
+              autumnAllowed,
+              legacyAllowed: success,
+            });
+          }
+          success = autumnAllowed;
+          if (autumnAllowed) {
+            remainingCredits = Math.max(remainingCredits, requestedCredits);
+          }
+        }
+      }
+
       if (chunk) {
         req.acuc = chunk;
       }

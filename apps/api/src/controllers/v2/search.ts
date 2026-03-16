@@ -18,7 +18,9 @@ import {
   captureExceptionWithZdrCheck,
 } from "../../services/sentry";
 import { executeSearch } from "../../search/execute";
-import type { BillingMetadata } from "../../services/billing/types";
+import {
+  type BillingMetadata,
+} from "../../services/billing/types";
 
 export async function searchController(
   req: RequestWithAuth<{}, SearchResponse, SearchRequest>,

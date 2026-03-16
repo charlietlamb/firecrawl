@@ -37,23 +37,32 @@ export async function billTeam(
         ...toAutumnBillingProperties(billing),
         apiKeyId: api_key_id,
       };
-      // Acquire an Autumn lock opportunistically, but never gate usage on it.
-      // billTeam is fire-and-forget at call sites, so this does not block responses.
-      const autumnLockId = await autumnService.lockCredits({
+      const trackedInRequest = await autumnService.trackCredits({
         teamId: team_id,
         value: credits,
         properties: autumnProperties,
+        requestScoped: true,
       });
-      return queueBillingOperation(
+
+      const result = await queueBillingOperation(
         team_id,
         subscription_id,
         credits,
         api_key_id,
         billing,
         false,
-        autumnLockId,
-        autumnProperties,
+        trackedInRequest,
       );
+
+      if (!result.success && trackedInRequest) {
+        await autumnService.refundCredits({
+          teamId: team_id,
+          value: credits,
+          properties: autumnProperties,
+        });
+      }
+
+      return result;
     },
     { success: true, message: "No DB, bypassed." },
   )(team_id, subscription_id, credits, api_key_id, billing, logger);
@@ -66,16 +75,21 @@ type CheckTeamCreditsResponse = {
   chunk?: AuthCreditUsageChunk;
 };
 
+type CheckTeamCreditsOptions = {
+  sideEffects?: boolean;
+};
+
 export async function checkTeamCredits(
   chunk: AuthCreditUsageChunk | null,
   team_id: string,
   credits: number,
+  options: CheckTeamCreditsOptions = {},
 ): Promise<CheckTeamCreditsResponse> {
   return withAuth(supaCheckTeamCredits, {
     success: true,
     message: "No DB, bypassed",
     remainingCredits: Infinity,
-  })(chunk, team_id, credits);
+  })(chunk, team_id, credits, options);
 }
 
 // if team has enough credits for the operation, return true, else return false
@@ -83,6 +97,7 @@ async function supaCheckTeamCredits(
   chunk: AuthCreditUsageChunk | null,
   team_id: string,
   credits: number,
+  options: CheckTeamCreditsOptions = {},
 ): Promise<CheckTeamCreditsResponse> {
   // WARNING: chunk will be null if team_id is preview -- do not perform operations on it under ANY circumstances - mogery
   if (team_id === "preview" || team_id.startsWith("preview_")) {
@@ -105,6 +120,7 @@ async function supaCheckTeamCredits(
     };
   }
 
+  const sideEffects = options.sideEffects ?? true;
   let isAutoRechargeEnabled = false,
     autoRechargeThreshold = 1000;
   const cacheKey = `team_auto_recharge_${team_id}`;
@@ -146,6 +162,7 @@ async function supaCheckTeamCredits(
     chunk.adjusted_credits_used / (chunk.total_credits_sum ?? 100000000);
 
   if (
+    sideEffects &&
     isAutoRechargeEnabled &&
     chunk.remaining_credits < autoRechargeThreshold &&
     !chunk.is_extract
@@ -179,7 +196,10 @@ async function supaCheckTeamCredits(
   }
 
   // Only notify if their actual credits (not what they will use) used is greater than the total price credits
-  if (chunk.adjusted_credits_used > (chunk.total_credits_sum ?? 100000000)) {
+  if (
+    sideEffects &&
+    chunk.adjusted_credits_used > (chunk.total_credits_sum ?? 100000000)
+  ) {
     sendNotification(
       team_id,
       NotificationType.LIMIT_REACHED,
@@ -187,7 +207,11 @@ async function supaCheckTeamCredits(
       chunk.sub_current_period_end,
       chunk,
     );
-  } else if (creditUsagePercentage >= 0.8 && creditUsagePercentage < 1) {
+  } else if (
+    sideEffects &&
+    creditUsagePercentage >= 0.8 &&
+    creditUsagePercentage < 1
+  ) {
     // Send email notification for approaching credit limit
     sendNotification(
       team_id,
