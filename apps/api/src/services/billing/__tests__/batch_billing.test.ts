@@ -218,6 +218,16 @@ describe("processBillingBatch", () => {
 
     await processBillingBatch();
 
+    expect(refundCredits).toHaveBeenCalledWith({
+      teamId: "team-1",
+      value: 10,
+      properties: {
+        source: "processBillingBatch",
+        endpoint: "extract",
+        apiKeyId: 123,
+        subscriptionId: "sub-1",
+      },
+    });
     expect(rpc).toHaveBeenCalledTimes(2);
     expect(trackCredits).toHaveBeenCalledWith({
       teamId: "team-2",
